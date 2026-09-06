@@ -1,0 +1,73 @@
+name: build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    name: Pack module zip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout module source
+        uses: actions/checkout@v4
+        with:
+          path: src
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Write module-zip helper
+        run: |
+          mkdir -p "${{ github.workspace }}/packer" "${{ github.workspace }}/out"
+          cat > "${{ github.workspace }}/packer/create_mod.go" <<'EOF'
+          package main
+
+          import (
+              "log"
+              "os"
+
+              "golang.org/x/mod/module"
+              "golang.org/x/mod/zip"
+          )
+
+          func main() {
+              if len(os.Args) != 5 {
+                  log.Fatal("usage: create_mod <module-path> <version> <source-dir> <output-zip>")
+              }
+              m := module.Version{Path: os.Args[1], Version: os.Args[2]}
+              f, err := os.Create(os.Args[4])
+              if err != nil {
+                  log.Fatal(err)
+              }
+              defer f.Close()
+              if err := zip.CreateFromDir(f, m, os.Args[3]); err != nil {
+                  log.Fatal(err)
+              }
+              log.Printf("created module zip: %s", os.Args[4])
+          }
+          EOF
+
+      - name: Build the module zip
+        working-directory: ${{ github.workspace }}/packer
+        env:
+          GOFLAGS: -mod=mod
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          # Upstream v1.1.0 ships no .github/ at all, so this build's own CI
+          # plumbing must not leak into the packaged module zip.
+          rm -rf "${{ github.workspace }}/src/.github"
+          go mod init example.com/packer
+          go get golang.org/x/mod@v0.17.0
+          go run ./create_mod.go github.com/Masterminds/goutils v1.1.0 "${{ github.workspace }}/src" "${{ github.workspace }}/out/v1.1.0.zip"
+          unzip -l "${{ github.workspace }}/out/v1.1.0.zip"
+
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: ${{ github.workspace }}/out/v1.1.0.zip
+          if-no-files-found: error
